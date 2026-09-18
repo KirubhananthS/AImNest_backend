@@ -1,0 +1,20 @@
+# Python cache and build artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environment
+venv/
+.env
+.env.*
+!.env.example
+
+# Local development and test artifacts
+.pytest_cache/
+.DS_Store
+.coverage
+htmlcov/
+
+# Editors
+.vscode/
