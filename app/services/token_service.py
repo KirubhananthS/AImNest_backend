@@ -40,7 +40,7 @@ class TokenService:
         )
 
         self.db.add(record)
-        self.db.commit()
+        self.db.flush()
         return record
 
     def get_refresh_token(self, token_hash: str):
@@ -68,6 +68,23 @@ class TokenService:
 
         return record
 
+    def revoke_refresh_token_family(self, family_id: str):
+        records = (
+            self.db.query(RefreshToken)
+            .filter(RefreshToken.family_id == family_id)
+            .filter(RefreshToken.revoked.is_(False))
+            .all()
+        )
+
+        now = datetime.now(timezone.utc)
+
+        for record in records:
+            record.revoked = True
+            record.revoked_at = now
+
+        self.db.commit()
+        return records
+
     def revoke_refresh_token(self, token_hash: str):
         record = self.db.query(RefreshToken).filter(
             RefreshToken.token_hash == token_hash
@@ -81,10 +98,29 @@ class TokenService:
         return record
 
     def rotate_refresh_token(self, token: str):
-        old_record = self.validate_stored_refresh_token(token)
+        import hashlib
 
-        if not old_record:
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        stored_record = self.get_refresh_token(token_hash)
+
+        if not stored_record:
             return None
+
+        # Reuse of an already-revoked token means the token family
+        # may have been compromised. Revoke the entire family.
+        if stored_record.revoked:
+            family_id = stored_record.family_id
+
+            if family_id:
+                self.revoke_refresh_token_family(family_id)
+
+            self.db.commit()
+            return None
+
+        if stored_record.expires_at <= datetime.now(timezone.utc):
+            return None
+
+        old_record = stored_record
 
         old_record.revoked = True
         old_record.revoked_at = datetime.now(timezone.utc)

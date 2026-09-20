@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-
+from uuid import uuid4
 from app.core.jwt_service import JWTService
 from app.dependencies.auth import get_current_user_from_access_token, get_current_user_token
 from app.db.session import get_db
@@ -24,9 +24,22 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
         user = service.register(payload.name, str(payload.email), payload.password, payload.phone)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    access_token = JWTService.create_access_token(user.id)
+    refresh_token = JWTService.create_refresh_token(user.id)
+
+    TokenService(db).store_refresh_token(
+        user_id=user.id,
+        token=refresh_token,
+        family_id=str(uuid4()),
+    )
+    # store_refresh_token() only flushes, so the router owns the commit
+    # boundary: without this the refresh token row is rolled back when the
+    # request session closes and the returned refreshToken cannot be used.
+    db.commit()
+
     return {
-        "accessToken": JWTService.create_access_token(user.id),
-        "refreshToken": JWTService.create_refresh_token(user.id),
+        "accessToken": access_token,
+        "refreshToken": refresh_token,
         "user": {
             "id": user.id,
             "name": user.name,
@@ -112,3 +125,19 @@ def verify_otp(payload: OTPVerifyRequest, db: Session = Depends(get_db)):
     if not service.verify_otp_once(user.id, payload.otp, purpose="login"):
         raise HTTPException(status_code=400, detail="Invalid or expired OTP")
     return {"verified": True, "message": "OTP verified successfully"}
+@router.post("/logout")
+def logout(
+    payload: RefreshTokenRequest,
+    db: Session = Depends(get_db),
+):
+    import hashlib
+
+    token_hash = hashlib.sha256(
+        payload.refresh_token.encode()
+    ).hexdigest()
+
+    TokenService(db).revoke_refresh_token(token_hash)
+
+    return {
+        "message": "Logged out successfully"
+    }

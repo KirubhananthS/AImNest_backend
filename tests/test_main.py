@@ -1,5 +1,6 @@
 import uuid
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -14,11 +15,43 @@ from app.db.models.conversation import Conversation
 from app.db.models.message import Message
 from app.db.models.notification import Notification
 from app.db.models.user_preferences import UserPreferences
+from app.db.models.refresh_token import RefreshToken
 from app.db.session import SessionLocal
 from app.services.auth_service import AuthService
+from app.core.config import settings
 from app.core.security import verify_password
 
 client = TestClient(app)
+
+def verify_registered_user(email: str) -> None:
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == email.lower()).first()
+        assert user is not None
+
+        service = AuthService(db)
+        request, raw_otp = service.create_otp(
+            user.id,
+            channel="email",
+            purpose="login",
+        )
+
+        assert request is not None
+        assert len(raw_otp) == 6
+        assert raw_otp.isdigit()
+    finally:
+        db.close()
+
+    verify_resp = client.post(
+        "/api/auth/verify-otp",
+        json={
+            "email": email,
+            "otp": raw_otp,
+        },
+    )
+
+    assert verify_resp.status_code == 200
+    assert verify_resp.json()["verified"] is True
 
 
 def test_workspace_core_crud_requires_auth_and_owner_scope():
@@ -33,7 +66,9 @@ def test_workspace_core_crud_requires_auth_and_owner_scope():
         },
     )
     assert owner.status_code == 200
+    verify_registered_user(owner_email)
     owner_token = owner.json()["accessToken"]
+
 
     other_email = f"workspace_other_{uuid.uuid4().hex[:8]}@example.com"
     other = client.post(
@@ -46,6 +81,7 @@ def test_workspace_core_crud_requires_auth_and_owner_scope():
         },
     )
     assert other.status_code == 200
+    verify_registered_user(other_email)
     other_token = other.json()["accessToken"]
 
     blank_headers = {}
@@ -131,6 +167,83 @@ def test_auth_refresh_endpoint_rejects_revoked_refresh_token():
 
     assert refresh_response.status_code == 401
 
+def test_refresh_token_reuse_revokes_token_family():
+    response = client.post(
+        "/api/auth/login",
+        json={
+            "email": "demo@aimnest.com",
+            "password": "demo123",
+        },
+    )
+
+    assert response.status_code == 200
+
+    old_refresh_token = response.json()["refreshToken"]
+
+    # First use: rotation must succeed.
+    refresh_response = client.post(
+        "/api/auth/refresh",
+        json={"refresh_token": old_refresh_token},
+    )
+
+    assert refresh_response.status_code == 200
+
+    new_refresh_token = refresh_response.json()["refreshToken"]
+    assert new_refresh_token != old_refresh_token
+
+def test_refresh_token_reuse_revokes_token_family():
+    response = client.post(
+        "/api/auth/login",
+        json={"email": "demo@aimnest.com", "password": "demo123"},
+    )
+
+    assert response.status_code == 200
+
+    old_refresh_token = response.json()["refreshToken"]
+
+    refresh_response = client.post(
+        "/api/auth/refresh",
+        json={"refresh_token": old_refresh_token},
+    )
+
+    assert refresh_response.status_code == 200
+
+    new_refresh_token = refresh_response.json()["refreshToken"]
+
+    assert new_refresh_token != old_refresh_token
+
+    reuse_response = client.post(
+        "/api/auth/refresh",
+        json={"refresh_token": old_refresh_token},
+    )
+
+    assert reuse_response.status_code == 401
+
+    family_reuse_response = client.post(
+        "/api/auth/refresh",
+        json={"refresh_token": new_refresh_token},
+    )
+
+    assert family_reuse_response.status_code == 401
+
+    # Reusing the already-rotated token must be rejected.
+    reuse_response = client.post(
+        "/api/auth/refresh",
+        json={"refresh_token": old_refresh_token},
+    )
+
+    assert reuse_response.status_code == 401
+
+    # H1 requirement:
+    # Once refresh-token reuse is detected, the active token in the
+    # same token family must also be invalidated.
+    family_reuse_response = client.post(
+        "/api/auth/refresh",
+        json={"refresh_token": new_refresh_token},
+    )
+
+    assert family_reuse_response.status_code == 401
+
 def test_auth_refresh_endpoint_validates_stored_refresh_token():
     response = client.post(
         "/api/auth/login",
@@ -152,7 +265,44 @@ def test_auth_refresh_endpoint_validates_stored_refresh_token():
 
     assert "accessToken" in payload
     assert "refreshToken" in payload
-    assert payload["refreshToken"] == refresh_token
+    assert payload["refreshToken"] != refresh_token
+
+def test_refresh_token_reuse_revokes_token_family():
+    response = client.post(
+        "/api/auth/login",
+        json={
+            "email": "demo@aimnest.com",
+            "password": "demo123",
+        },
+    )
+
+    assert response.status_code == 200
+
+    old_refresh_token = response.json()["refreshToken"]
+
+    refresh_response = client.post(
+        "/api/auth/refresh",
+        json={"refresh_token": old_refresh_token},
+    )
+
+    assert refresh_response.status_code == 200
+
+    new_refresh_token = refresh_response.json()["refreshToken"]
+    assert new_refresh_token != old_refresh_token
+
+    reuse_response = client.post(
+        "/api/auth/refresh",
+        json={"refresh_token": old_refresh_token},
+    )
+
+    assert reuse_response.status_code == 401
+
+    family_reuse_response = client.post(
+        "/api/auth/refresh",
+        json={"refresh_token": new_refresh_token},
+    )
+
+    assert family_reuse_response.status_code == 401
 
 
 def test_auth_refresh_endpoint_rotates_refresh_token():
@@ -179,6 +329,83 @@ def test_auth_refresh_endpoint_rotates_refresh_token():
     assert "accessToken" in payload
     assert "refreshToken" in payload
     assert new_refresh_token != old_refresh_token
+
+def test_auth_logout_revokes_refresh_token():
+    response = client.post(
+        "/api/auth/login",
+        json={"email": "demo@aimnest.com", "password": "demo123"},
+    )
+
+    assert response.status_code == 200
+
+    refresh_token = response.json()["refreshToken"]
+
+    logout_response = client.post(
+        "/api/auth/logout",
+        json={"refresh_token": refresh_token},
+    )
+
+    assert logout_response.status_code == 200
+    assert logout_response.json()["message"] == "Logged out successfully"
+
+    refresh_response = client.post(
+        "/api/auth/refresh",
+        json={"refresh_token": refresh_token},
+    )
+
+    assert refresh_response.status_code == 401
+
+def test_register_issued_refresh_token_is_persisted_and_rotates():
+    email = f"register_refresh_{uuid.uuid4().hex[:8]}@example.com"
+
+    register = client.post(
+        "/api/auth/register",
+        json={
+            "name": "Register Refresh User",
+            "email": email,
+            "password": "StrongPass123!",
+            "phone": "+1234567890",
+        },
+    )
+    assert register.status_code == 200
+    original_refresh_token = register.json()["refreshToken"]
+
+    # The registration response must hand back a token that was actually
+    # persisted, otherwise the very next refresh call cannot succeed.
+    import hashlib
+
+    token_hash = hashlib.sha256(original_refresh_token.encode()).hexdigest()
+
+    db = SessionLocal()
+    try:
+        stored = (
+            db.query(RefreshToken)
+            .filter(RefreshToken.token_hash == token_hash)
+            .first()
+        )
+        assert stored is not None
+        assert stored.revoked is False
+    finally:
+        db.close()
+
+    refresh_response = client.post(
+        "/api/auth/refresh",
+        json={"refresh_token": original_refresh_token},
+    )
+    assert refresh_response.status_code == 200
+
+    payload = refresh_response.json()
+    assert "accessToken" in payload
+    assert "refreshToken" in payload
+    assert payload["refreshToken"] != original_refresh_token
+
+    # The original token must have been consumed by the rotation.
+    reused = client.post(
+        "/api/auth/refresh",
+        json={"refresh_token": original_refresh_token},
+    )
+    assert reused.status_code == 401
+
 
 def test_register_creates_otp_request_row_and_hash():
     email = f"phase1_reg_otp_{uuid.uuid4().hex[:8]}@example.com"
@@ -245,6 +472,11 @@ def test_verify_otp_flow_can_verify_and_reject_invalid_otp():
         assert verify_resp.status_code == 200
         assert verify_resp.json()["verified"] is True
 
+        db.expire_all()
+        verified_user = db.query(User).filter(User.email == email.lower()).first()
+        assert verified_user is not None
+        assert verified_user.is_verified is True
+
         bad_resp = client.post(
             "/api/auth/verify-otp",
             json={"email": email, "otp": "000000"},
@@ -267,6 +499,7 @@ def test_workspace_list_endpoint_returns_workspaces():
         },
     )
     assert register.status_code == 200
+    verify_registered_user(email)
     token = register.json()["accessToken"]
 
     response = client.get("/api/workspaces", headers={"Authorization": f"Bearer {token}"})
@@ -288,6 +521,8 @@ def test_workspace_members_owner_management_and_member_visibility():
     )
     assert owner_register.status_code == 200
     assert member_register.status_code == 200
+    verify_registered_user(owner_email)
+    verify_registered_user(member_email)
     owner_headers = {"Authorization": f"Bearer {owner_register.json()['accessToken']}"}
     member_headers = {"Authorization": f"Bearer {member_register.json()['accessToken']}"}
 
@@ -364,17 +599,25 @@ def test_workspace_task_crud_authorization_and_validation():
         ("Task Other", other_email),
     ]
     tokens = {}
+
     for name, email in registrations:
         response = client.post(
             "/api/auth/register",
-            json={"name": name, "email": email, "password": "StrongPass123!", "phone": "+1234567890"},
+            json={
+                "name": name,
+                "email": email,
+                "password": "StrongPass123!",
+                "phone": "+1234567890",
+            },
         )
         assert response.status_code == 200
+        verify_registered_user(email)
         tokens[email] = response.json()["accessToken"]
 
     owner_headers = {"Authorization": f"Bearer {tokens[owner_email]}"}
     member_headers = {"Authorization": f"Bearer {tokens[member_email]}"}
     other_headers = {"Authorization": f"Bearer {tokens[other_email]}"}
+
 
     workspace_response = client.post(
         "/api/workspaces",
@@ -472,6 +715,7 @@ def test_workspace_resource_metadata_create_list_get_and_authorization():
             json={"name": name, "email": email, "password": "StrongPass123!", "phone": "+1234567890"},
         )
         assert response.status_code == 200
+        verify_registered_user(email)
         tokens[email] = response.json()["accessToken"]
         user_ids[email] = response.json()["user"]["id"]
 
@@ -550,6 +794,7 @@ def test_workspace_activity_retrieval_persistence_and_authorization():
             json={"name": name, "email": email, "password": "StrongPass123!", "phone": "+1234567890"},
         )
         assert response.status_code == 200
+        verify_registered_user(email)
         users.append(response.json())
 
     owner_headers = {"Authorization": f"Bearer {users[0]['accessToken']}"}
@@ -611,6 +856,7 @@ def test_goal_crud_requires_auth_and_is_user_scoped():
             json={"name": name, "email": email, "password": "StrongPass123!", "phone": "+1234567890"},
         )
         assert response.status_code == 200
+        verify_registered_user(email)
         registrations.append(response.json())
 
     owner_token = registrations[0]["accessToken"]
@@ -689,6 +935,7 @@ def test_goal_task_crud_requires_auth_and_is_goal_user_scoped():
             json={"name": name, "email": email, "password": "StrongPass123!", "phone": "+1234567890"},
         )
         assert response.status_code == 200
+        verify_registered_user(email)
         registrations.append(response.json())
 
     owner_headers = {"Authorization": f"Bearer {registrations[0]['accessToken']}"}
@@ -764,6 +1011,7 @@ def test_goal_milestone_crud_requires_auth_and_is_goal_user_scoped():
             json={"name": name, "email": email, "password": "StrongPass123!", "phone": "+1234567890"},
         )
         assert response.status_code == 200
+        verify_registered_user(email)
         registrations.append(response.json())
 
     owner_headers = {"Authorization": f"Bearer {registrations[0]['accessToken']}"}
@@ -839,6 +1087,7 @@ def test_conversation_crud_requires_auth_and_is_user_scoped():
             json={"name": name, "email": email, "password": "StrongPass123!", "phone": "+1234567890"},
         )
         assert response.status_code == 200
+        verify_registered_user(email)
         registrations.append(response.json())
 
     owner_headers = {"Authorization": f"Bearer {registrations[0]['accessToken']}"}
@@ -895,6 +1144,7 @@ def test_message_creation_listing_authentication_and_cross_user_access():
             json={"name": name, "email": email, "password": "StrongPass123!", "phone": "+1234567890"},
         )
         assert response.status_code == 200
+        verify_registered_user(email)
         registrations.append(response.json())
 
     owner_headers = {"Authorization": f"Bearer {registrations[0]['accessToken']}"}
@@ -956,6 +1206,7 @@ def test_assistant_reply_persists_user_and_assistant_messages():
             json={"name": name, "email": email, "password": "StrongPass123!", "phone": "+1234567890"},
         )
         assert response.status_code == 200
+        verify_registered_user(email)
         registrations.append(response.json())
 
     owner_headers = {"Authorization": f"Bearer {registrations[0]['accessToken']}"}
@@ -1016,6 +1267,7 @@ def test_dashboard_is_authenticated_and_user_scoped():
             json={"name": name, "email": email, "password": "StrongPass123!", "phone": "+1234567890"},
         )
         assert response.status_code == 200
+        verify_registered_user(email)
         registrations.append(response.json())
 
     owner_headers = {"Authorization": f"Bearer {registrations[0]['accessToken']}"}
@@ -1089,16 +1341,18 @@ def test_dashboard_is_authenticated_and_user_scoped():
 
 
 def test_dashboard_for_new_user_returns_empty_persistent_collections():
+    email = f"dashboard_empty_{uuid.uuid4().hex[:8]}@example.com"
     response = client.post(
         "/api/auth/register",
         json={
             "name": "Empty Dashboard User",
-            "email": f"dashboard_empty_{uuid.uuid4().hex[:8]}@example.com",
+            "email": email,
             "password": "StrongPass123!",
             "phone": "+1234567890",
         },
     )
     assert response.status_code == 200
+    verify_registered_user(email)
     dashboard_response = client.get(
         "/api/dashboard",
         headers={"Authorization": f"Bearer {response.json()['accessToken']}"},
@@ -1122,6 +1376,7 @@ def test_notifications_list_read_authentication_and_user_scope():
             json={"name": name, "email": email, "password": "StrongPass123!", "phone": "+1234567890"},
         )
         assert response.status_code == 200
+        verify_registered_user(email)
         registrations.append(response.json())
 
     owner_id = registrations[0]["user"]["id"]
@@ -1174,6 +1429,7 @@ def test_settings_get_update_persistence_authentication_and_user_scope():
             json={"name": name, "email": email, "password": "StrongPass123!", "phone": "+1234567890"},
         )
         assert response.status_code == 200
+        verify_registered_user(email)
         registrations.append(response.json())
 
     owner_id = registrations[0]["user"]["id"]
@@ -1226,16 +1482,18 @@ def test_settings_get_update_persistence_authentication_and_user_scope():
 
 
 def test_ai_conversation_endpoint_returns_conversation_and_message():
+    email = f"conversation_legacy_{uuid.uuid4().hex[:8]}@example.com"
     register = client.post(
         "/api/auth/register",
         json={
             "name": "Conversation Legacy Test User",
-            "email": f"conversation_legacy_{uuid.uuid4().hex[:8]}@example.com",
+            "email": email,
             "password": "StrongPass123!",
             "phone": "+1234567890",
         },
     )
     assert register.status_code == 200
+    verify_registered_user(email)
     response = client.get(
         "/api/ai/conversations",
         headers={"Authorization": f"Bearer {register.json()['accessToken']}"},
@@ -1243,3 +1501,107 @@ def test_ai_conversation_endpoint_returns_conversation_and_message():
     assert response.status_code == 200
     data = response.json()
     assert isinstance(data, list)
+
+
+def _register_unverified_active_user(prefix: str) -> tuple[str, dict]:
+    """Register (but do not OTP-verify) an active user and return its headers."""
+    email = f"{prefix}_{uuid.uuid4().hex[:8]}@example.com"
+    register = client.post(
+        "/api/auth/register",
+        json={
+            "name": "Unverified Active User",
+            "email": email,
+            "password": "StrongPass123!",
+            "phone": "+1234567890",
+        },
+    )
+    assert register.status_code == 200
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == email.lower()).first()
+        assert user is not None
+        assert user.is_active is True
+        assert user.is_verified is False
+    finally:
+        db.close()
+
+    return email, {"Authorization": f"Bearer {register.json()['accessToken']}"}
+
+
+def test_unverified_active_user_allowed_when_verification_not_required(monkeypatch):
+    monkeypatch.setattr(settings, "require_verified_user", False)
+    _, headers = _register_unverified_active_user("unverified_allowed")
+
+    response = client.get("/api/workspaces", headers=headers)
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_unverified_active_user_blocked_when_verification_required(monkeypatch):
+    monkeypatch.setattr(settings, "require_verified_user", True)
+    _, headers = _register_unverified_active_user("unverified_blocked")
+
+    response = client.get("/api/workspaces", headers=headers)
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "User account is not verified"
+
+
+@pytest.mark.parametrize("require_verified_user", [False, True])
+def test_inactive_user_blocked_in_both_verification_flag_states(
+    monkeypatch, require_verified_user
+):
+    monkeypatch.setattr(settings, "require_verified_user", require_verified_user)
+    email, headers = _register_unverified_active_user("inactive_flag")
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == email.lower()).first()
+        assert user is not None
+        user.is_active = False
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get("/api/workspaces", headers=headers)
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "User account is inactive"
+
+
+def test_inactive_user_cannot_use_access_token():
+    email = f"inactive_user_{uuid.uuid4().hex[:8]}@example.com"
+
+    register_resp = client.post(
+        "/api/auth/register",
+        json={
+            "name": "Inactive User",
+            "email": email,
+            "password": "StrongPass123!",
+            "phone": "+1234567890",
+        },
+    )
+    assert register_resp.status_code == 200
+
+    access_token = register_resp.json()["accessToken"]
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.email == email.lower()).first()
+        assert user is not None
+
+        user.is_verified = True
+        user.is_active = False
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(
+        "/api/workspaces",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "User account is inactive"

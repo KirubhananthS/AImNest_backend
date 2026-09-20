@@ -11,6 +11,8 @@ from app.dependencies.auth import get_current_user_from_access_token
 from app.schemas.conversation import ConversationCreate, ConversationRead
 from app.schemas.message import MessageCreate, MessageRead
 from app.schemas.assistant import AssistantReplyRead
+from app.services.ai.provider import LLMProvider
+from app.services.ai.provider_factory import get_llm_provider
 from app.services.ai_service import AssistantService
 
 router = APIRouter(prefix="/api/ai/conversations", tags=["conversations"])
@@ -103,6 +105,7 @@ def create_message(
     payload: MessageCreate,
     db: Session = Depends(get_db),
     auth_payload: dict = Depends(get_current_user_from_access_token),
+    provider: LLMProvider | None = Depends(get_llm_provider),
 ):
     user = _get_current_user(db, auth_payload)
     conversation = _get_owned_conversation(db, conversation_id, user)
@@ -111,8 +114,12 @@ def create_message(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     user_message = Message(conversation_id=conversation.id, role="user", content=content)
-    assistant_content = AssistantService.generate_reply(content)
-    assistant_message = Message(conversation_id=conversation.id, role="assistant", content=assistant_content)
+    reply = AssistantService(db, provider=provider).reply(
+        content=content,
+        user=user,
+        conversation=conversation,
+    )
+    assistant_message = Message(conversation_id=conversation.id, role="assistant", content=reply.content)
     db.add(user_message)
     db.add(assistant_message)
     conversation.updated_at = datetime.now(timezone.utc)

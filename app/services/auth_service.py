@@ -1,10 +1,12 @@
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
 from app.core.security import hash_password, verify_password, generate_otp
 from app.core.jwt_service import JWTService
+from app.core.config import settings
 from app.db.models.user import User
 from app.db.models.otp_request import OTPRequest
 from app.db.models.refresh_token import RefreshToken
@@ -55,9 +57,16 @@ class AuthService:
         refresh_token = JWTService.create_refresh_token(user.id)
 
         TokenService(self.db).store_refresh_token(
-    user_id=user.id,
-    token=refresh_token,
-)
+
+         user_id=user.id,
+
+         token=refresh_token,
+
+         family_id=str(uuid4()),
+
+        )
+        self.db.commit()
+
         return {
             "accessToken": access_token,
             "refreshToken": refresh_token,
@@ -81,8 +90,10 @@ class AuthService:
         }
 
     def create_otp(self, user_id: str, channel: str = "email", purpose: str = "login"):
-        otp = generate_otp(length=6)
-        expires_at = datetime.now(timezone.utc) + timedelta(seconds=180)
+        otp = generate_otp(length=settings.otp_length)
+        expires_at = datetime.now(timezone.utc) + timedelta(
+        seconds=settings.otp_expires_seconds
+        )
         otp_hash = hash_password(otp)
         request = OTPRequest(
             user_id=user_id,
@@ -111,7 +122,7 @@ class AuthService:
         if not pending:
             return False
 
-        if pending.attempts >= 3:
+        if pending.attempts >= settings.otp_attempt_limit:
             return False
 
         verified = verify_password(otp, pending.otp_hash)
@@ -122,5 +133,10 @@ class AuthService:
 
         pending.used_at = datetime.now(timezone.utc)
         pending.is_active = False
+
+        user = self.db.query(User).filter(User.id == user_id).first()
+        if user:
+            user.is_verified = True
+
         self.db.commit()
         return True
