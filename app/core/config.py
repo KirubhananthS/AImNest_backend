@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     port: int = 8000
     cors_origins: str = "*"
 
+    # ------------------------------------------------
+    # Database
+    # ------------------------------------------------
+
     database_url: str | None = None
     postgres_db: str | None = None
     postgres_user: str | None = None
@@ -28,24 +32,50 @@ class Settings(BaseSettings):
     postgres_host: str | None = None
     postgres_port: int | None = None
 
+    # ------------------------------------------------
+    # JWT
+    # ------------------------------------------------
+
     jwt_secret_key: str = "change-this-secret"
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 15
     jwt_refresh_token_expire_days: int = 30
 
+    # ------------------------------------------------
+    # Password / Security
+    # ------------------------------------------------
+
     argon2_time_cost: int = 3
     argon2_memory_cost: int = 65536
+
+    # ------------------------------------------------
+    # OTP
+    # ------------------------------------------------
 
     otp_expires_seconds: int = 180
     otp_length: int = 6
     otp_attempt_limit: int = 3
 
-    # Verification is part of the OTP architecture but enforcement is
-    # behind a flag: OTP delivery and resend are not wired up yet, so
-    # requiring verification would lock out every unverified account.
+    # Verification is part of the OTP architecture.
+    # Keep enforcement disabled until OTP delivery is wired.
     require_verified_user: bool = False
 
-    # Local LLM (Ollama) assistant configuration.
+    # ------------------------------------------------
+    # Email / SMTP
+    # ------------------------------------------------
+
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_use_tls: bool = True
+    smtp_from_email: str | None = None
+    smtp_from_name: str = "AImNest"
+
+    # ------------------------------------------------
+    # Local LLM (Ollama)
+    # ------------------------------------------------
+
     ai_enabled: bool = True
     ai_provider: str = "ollama"
     ollama_base_url: str = "http://127.0.0.1:11434"
@@ -58,7 +88,10 @@ class Settings(BaseSettings):
     ai_max_output_tokens: int = 512
     ai_history_max_messages: int = 10
 
-    # User-scoped assistant context (goals, tasks, workspaces).
+    # ------------------------------------------------
+    # User-scoped assistant context
+    # ------------------------------------------------
+
     ai_context_enabled: bool = True
     ai_context_max_chars: int = 4000
     ai_context_max_goals: int = 8

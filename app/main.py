@@ -13,7 +13,7 @@ from app.routers.conversation import router as conversation_router
 from app.routers.dashboard import router as dashboard_router
 from app.routers.notification import router as notification_router
 from app.routers.settings import router as settings_router
-
+from app.routers.ticket import router as ticket_router
 app = FastAPI(
     title="AImNest Backend",
     version="1.0.0",
@@ -36,6 +36,8 @@ app.include_router(conversation_router)
 app.include_router(dashboard_router)
 app.include_router(notification_router)
 app.include_router(settings_router)
+for route in ticket_router.routes:
+    app.router.routes.append(route)
 
 class LoginRequest(BaseModel):
     email: EmailStr

@@ -1,0 +1,285 @@
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from app.db.models.ticket import Ticket
+from app.db.models.ticket_attempt import TicketAttempt
+from app.db.models.goal import Goal
+from app.db.models.user import User
+from app.db.session import get_db
+from app.dependencies.auth import get_current_user_from_access_token
+from app.schemas.ticket import TicketCreate, TicketRead, TicketUpdate
+from app.schemas.ticket_attempt import TicketAttemptCreate, TicketAttemptRead
+
+
+router = APIRouter(prefix="/api/tickets", tags=["tickets"])
+
+
+def _get_current_user(db: Session, auth_payload: dict) -> User:
+    user = db.query(User).filter(User.id == auth_payload.get("sub")).first()
+
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Not authenticated",
+        )
+
+    return user
+
+
+def _get_owned_ticket(
+    db: Session,
+    ticket_id: str,
+    user: User,
+) -> Ticket:
+    ticket = (
+        db.query(Ticket)
+        .filter(
+            Ticket.id == ticket_id,
+            Ticket.user_id == user.id,
+        )
+        .first()
+    )
+
+    if not ticket:
+        raise HTTPException(
+            status_code=404,
+            detail="Ticket not found",
+        )
+
+    return ticket
+
+
+def _clean_required(value: str, field_name: str) -> str:
+    cleaned = value.strip()
+
+    if not cleaned:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Ticket {field_name} must not be empty",
+        )
+
+    return cleaned
+
+
+@router.post("", response_model=TicketRead)
+def create_ticket(
+    payload: TicketCreate,
+    db: Session = Depends(get_db),
+    auth_payload: dict = Depends(get_current_user_from_access_token),
+):
+    user = _get_current_user(db, auth_payload)
+
+    goal = None
+
+    if payload.goal_id:
+        goal = (
+            db.query(Goal)
+            .filter(
+                Goal.id == payload.goal_id,
+                Goal.user_id == user.id,
+            )
+            .first()
+        )
+
+        if not goal:
+            raise HTTPException(
+                status_code=404,
+                detail="Goal not found",
+            )
+
+    ticket = Ticket(
+        user_id=user.id,
+        goal_id=payload.goal_id,
+        title=_clean_required(payload.title, "title"),
+        description=_clean_required(payload.description, "description"),
+        category=_clean_required(payload.category, "category"),
+        difficulty=payload.difficulty,
+        priority=payload.priority,
+        status=payload.status,
+    )
+
+    db.add(ticket)
+    db.commit()
+    db.refresh(ticket)
+
+    return ticket
+
+
+@router.get("", response_model=list[TicketRead])
+def list_tickets(
+    db: Session = Depends(get_db),
+    auth_payload: dict = Depends(get_current_user_from_access_token),
+):
+    user = _get_current_user(db, auth_payload)
+
+    return (
+        db.query(Ticket)
+        .filter(Ticket.user_id == user.id)
+        .order_by(Ticket.created_at.desc())
+        .all()
+    )
+
+
+@router.get("/{ticket_id}", response_model=TicketRead)
+def get_ticket(
+    ticket_id: str,
+    db: Session = Depends(get_db),
+    auth_payload: dict = Depends(get_current_user_from_access_token),
+):
+    user = _get_current_user(db, auth_payload)
+
+    return _get_owned_ticket(db, ticket_id, user)
+
+
+@router.patch("/{ticket_id}", response_model=TicketRead)
+def update_ticket(
+    ticket_id: str,
+    payload: TicketUpdate,
+    db: Session = Depends(get_db),
+    auth_payload: dict = Depends(get_current_user_from_access_token),
+):
+    user = _get_current_user(db, auth_payload)
+
+    ticket = _get_owned_ticket(db, ticket_id, user)
+
+    updates = payload.model_dump(exclude_unset=True)
+
+    for field_name in (
+        "title",
+        "description",
+        "category",
+    ):
+        if field_name in updates:
+            updates[field_name] = _clean_required(
+                updates[field_name],
+                field_name,
+            )
+
+    if "goal_id" in updates and updates["goal_id"]:
+        goal = (
+            db.query(Goal)
+            .filter(
+                Goal.id == updates["goal_id"],
+                Goal.user_id == user.id,
+            )
+            .first()
+        )
+
+        if not goal:
+            raise HTTPException(
+                status_code=404,
+                detail="Goal not found",
+            )
+
+    for field_name, value in updates.items():
+        setattr(ticket, field_name, value)
+
+    ticket.updated_at = datetime.now(timezone.utc)
+
+    db.commit()
+    db.refresh(ticket)
+
+    return ticket
+
+
+@router.delete("/{ticket_id}")
+def delete_ticket(
+    ticket_id: str,
+    db: Session = Depends(get_db),
+    auth_payload: dict = Depends(get_current_user_from_access_token),
+):
+    user = _get_current_user(db, auth_payload)
+
+    ticket = _get_owned_ticket(db, ticket_id, user)
+
+    db.delete(ticket)
+    db.commit()
+
+    return {
+        "message": "Ticket deleted",
+    }
+
+
+@router.post(
+    "/{ticket_id}/attempts",
+    response_model=TicketAttemptRead,
+)
+def create_ticket_attempt(
+    ticket_id: str,
+    payload: TicketAttemptCreate,
+    db: Session = Depends(get_db),
+    auth_payload: dict = Depends(get_current_user_from_access_token),
+):
+    user = _get_current_user(db, auth_payload)
+
+    ticket = _get_owned_ticket(db, ticket_id, user)
+
+    solution = _clean_required(
+        payload.solution,
+        "solution",
+    )
+
+    last_attempt = (
+        db.query(TicketAttempt)
+        .filter(
+            TicketAttempt.ticket_id == ticket.id,
+            TicketAttempt.user_id == user.id,
+        )
+        .order_by(TicketAttempt.attempt_number.desc())
+        .first()
+    )
+
+    attempt_number = (
+        last_attempt.attempt_number + 1
+        if last_attempt
+        else 1
+    )
+
+    attempt = TicketAttempt(
+        ticket_id=ticket.id,
+        user_id=user.id,
+        attempt_number=attempt_number,
+        solution=solution,
+        evidence=(
+            payload.evidence.strip()
+            if payload.evidence
+            else None
+        ),
+        status="submitted",
+    )
+
+    db.add(attempt)
+
+    if ticket.status == "open":
+        ticket.status = "in_progress"
+
+    db.commit()
+    db.refresh(attempt)
+
+    return attempt
+
+
+@router.get(
+    "/{ticket_id}/attempts",
+    response_model=list[TicketAttemptRead],
+)
+def list_ticket_attempts(
+    ticket_id: str,
+    db: Session = Depends(get_db),
+    auth_payload: dict = Depends(get_current_user_from_access_token),
+):
+    user = _get_current_user(db, auth_payload)
+
+    ticket = _get_owned_ticket(db, ticket_id, user)
+
+    return (
+        db.query(TicketAttempt)
+        .filter(
+            TicketAttempt.ticket_id == ticket.id,
+            TicketAttempt.user_id == user.id,
+        )
+        .order_by(TicketAttempt.attempt_number.asc())
+        .all()
+    )
