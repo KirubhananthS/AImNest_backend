@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import uuid4
@@ -65,7 +66,7 @@ class AuthService:
         self.db.commit()
         self.db.refresh(user)
 
-        # Generate and persist OTP.
+        # Generate and persist registration OTP.
         # The OTP itself is never stored as plaintext.
         self.create_otp(
             user.id,
@@ -141,10 +142,31 @@ class AuthService:
         purpose: str = "login",
         email: Optional[str] = None,
     ):
-        otp = generate_otp(length=settings.otp_length)
+        # Invalidate previous active OTPs for the same
+        # user and purpose before creating a new one.
+        self.db.query(OTPRequest).filter(
+            OTPRequest.user_id == user_id,
+            OTPRequest.purpose == purpose,
+            OTPRequest.is_active == True,
+            OTPRequest.used_at.is_(None),
+        ).update(
+            {
+                OTPRequest.is_active: False,
+            },
+            synchronize_session=False,
+        )
 
-        expires_at = datetime.now(timezone.utc) + timedelta(
-            seconds=settings.otp_expires_seconds
+        self.db.commit()
+
+        otp = generate_otp(
+            length=settings.otp_length
+        )
+
+        expires_at = (
+            datetime.now(timezone.utc)
+            + timedelta(
+                seconds=settings.otp_expires_seconds
+            )
         )
 
         otp_hash = hash_password(otp)
@@ -165,16 +187,66 @@ class AuthService:
 
         # Send OTP only when an email address is available.
         if channel == "email" and email:
-            import asyncio
-
             asyncio.run(
                 self.email_service.send_otp_email(
                     to_email=email,
-                    otp=otp,
+                    otp_code=otp,
                 )
             )
 
         return request, otp
+
+    def create_password_reset_otp(
+        self,
+        email: str,
+    ):
+        user = (
+            self.db.query(User)
+            .filter(User.email == email.lower())
+            .first()
+        )
+
+        if not user:
+            raise ValueError("User not found")
+
+        self.create_otp(
+            user.id,
+            channel="email",
+            purpose="password_reset",
+            email=user.email,
+        )
+
+        return True
+
+    def reset_password(
+        self,
+        email: str,
+        otp: str,
+        new_password: str,
+    ):
+        user = (
+            self.db.query(User)
+            .filter(User.email == email.lower())
+            .first()
+        )
+
+        if not user:
+            raise ValueError("Invalid email or OTP")
+
+        verified = self.verify_otp_once(
+            user.id,
+            otp,
+            purpose="password_reset",
+        )
+
+        if not verified:
+            raise ValueError("Invalid or expired OTP")
+
+        user.password_hash = hash_password(new_password)
+
+        self.db.commit()
+
+        return True
 
     def verify_otp_once(
         self,
@@ -189,9 +261,12 @@ class AuthService:
             .filter(OTPRequest.is_active == True)
             .filter(OTPRequest.used_at.is_(None))
             .filter(
-                OTPRequest.expires_at >= datetime.now(timezone.utc)
+                OTPRequest.expires_at
+                >= datetime.now(timezone.utc)
             )
-            .order_by(OTPRequest.created_at.desc())
+            .order_by(
+                OTPRequest.created_at.desc()
+            )
             .first()
         )
 
@@ -220,9 +295,28 @@ class AuthService:
             .first()
         )
 
-        if user:
+        if not user:
+            return False
+
+        # Only registration/login OTP verifies the user.
+        if purpose == "login":
             user.is_verified = True
 
         self.db.commit()
+
+        # Welcome email is only sent after registration verification.
+        if purpose == "login":
+            try:
+                asyncio.run(
+                    self.email_service.send_welcome_email(
+                        to_email=user.email,
+                        user_name=user.name,
+                    )
+                )
+            except Exception as exc:
+                print(
+                    f"Welcome email could not be sent to "
+                    f"{user.email}: {exc}"
+                )
 
         return True

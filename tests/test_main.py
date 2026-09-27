@@ -1605,3 +1605,174 @@ def test_inactive_user_cannot_use_access_token():
 
     assert response.status_code == 403
     assert response.json()["detail"] == "User account is inactive"
+
+def test_resend_otp():
+    email = f"resend_{uuid.uuid4().hex[:8]}@example.com"
+
+    response = client.post(
+        "/api/auth/register",
+        json={
+            "name": "Resend Test User",
+            "email": email,
+            "password": "StrongPass123!",
+            "phone": "+1234567890",
+        },
+    )
+
+    assert response.status_code == 200
+
+    response = client.post(
+        "/api/auth/resend-otp",
+        json={
+            "email": email,
+            "otp": "",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["message"] == "OTP resent successfully"
+
+
+def test_forgot_password():
+    email = f"forgot_{uuid.uuid4().hex[:8]}@example.com"
+
+    response = client.post(
+        "/api/auth/register",
+        json={
+            "name": "Forgot Password User",
+            "email": email,
+            "password": "OldPassword123!",
+            "phone": "+1234567890",
+        },
+    )
+
+    assert response.status_code == 200
+
+    response = client.post(
+        "/api/auth/forgot-password",
+        json={
+            "email": email,
+        },
+    )
+
+    assert response.status_code == 200
+    assert (
+        response.json()["message"]
+        == "Password reset OTP sent successfully"
+    )
+
+
+def test_reset_password():
+    email = f"reset_{uuid.uuid4().hex[:8]}@example.com"
+
+    response = client.post(
+        "/api/auth/register",
+        json={
+            "name": "Reset Password User",
+            "email": email,
+            "password": "OldPassword123!",
+            "phone": "+1234567890",
+        },
+    )
+
+    assert response.status_code == 200
+
+    db = SessionLocal()
+
+    try:
+        user = (
+            db.query(User)
+            .filter(User.email == email.lower())
+            .first()
+        )
+
+        assert user is not None
+
+        _, raw_otp = AuthService(db).create_otp(
+            user.id,
+            channel="email",
+            purpose="password_reset",
+        )
+    finally:
+        db.close()
+
+    response = client.post(
+        "/api/auth/reset-password",
+        json={
+            "email": email,
+            "otp": raw_otp,
+            "new_password": "NewPassword123!",
+        },
+    )
+
+    assert response.status_code == 200
+    assert (
+        response.json()["message"]
+        == "Password reset successfully"
+    )
+
+
+def test_new_password_works_after_reset():
+    email = f"reset_login_{uuid.uuid4().hex[:8]}@example.com"
+
+    response = client.post(
+        "/api/auth/register",
+        json={
+            "name": "Reset Login User",
+            "email": email,
+            "password": "OldPassword123!",
+            "phone": "+1234567890",
+        },
+    )
+
+    assert response.status_code == 200
+
+    db = SessionLocal()
+
+    try:
+        user = (
+            db.query(User)
+            .filter(User.email == email.lower())
+            .first()
+        )
+
+        assert user is not None
+
+        _, raw_otp = AuthService(db).create_otp(
+            user.id,
+            channel="email",
+            purpose="password_reset",
+        )
+    finally:
+        db.close()
+
+    response = client.post(
+        "/api/auth/reset-password",
+        json={
+            "email": email,
+            "otp": raw_otp,
+            "new_password": "NewPassword123!",
+        },
+    )
+
+    assert response.status_code == 200
+
+    login_response = client.post(
+        "/api/auth/login",
+        json={
+            "email": email,
+            "password": "NewPassword123!",
+        },
+    )
+
+    assert login_response.status_code == 200
+
+    old_login_response = client.post(
+        "/api/auth/login",
+        json={
+            "email": email,
+            "password": "OldPassword123!",
+        },
+    )
+
+    assert old_login_response.status_code == 401
