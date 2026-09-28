@@ -107,3 +107,10 @@ class Ticket(Base):
         back_populates="ticket",
         cascade="all, delete-orphan",
     )
+
+    activities = relationship(
+    "TicketActivity",
+    back_populates="ticket",
+    cascade="all, delete-orphan",
+    order_by="TicketActivity.created_at",
+)

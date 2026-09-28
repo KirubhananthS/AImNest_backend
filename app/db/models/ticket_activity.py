@@ -10,8 +10,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.base import Base
 
 
-class WorkspaceActivity(Base):
-    __tablename__ = "workspace_activities"
+class TicketActivity(Base):
+    __tablename__ = "ticket_activities"
 
     id: Mapped[str] = mapped_column(
         String(64),
@@ -19,9 +19,9 @@ class WorkspaceActivity(Base):
         default=lambda: f"act_{uuid4().hex[:8]}",
     )
 
-    workspace_id: Mapped[str] = mapped_column(
-        String(64),
-        ForeignKey("workspaces.id", ondelete="CASCADE"),
+    ticket_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("tickets.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
@@ -56,10 +56,8 @@ class WorkspaceActivity(Base):
         index=True,
     )
 
-    workspace: Mapped["Workspace"] = relationship(
+    ticket: Mapped["Ticket"] = relationship(
         back_populates="activities",
     )
 
-    user: Mapped[Optional["User"]] = relationship(
-        back_populates="workspace_activities",
-    )
+    user: Mapped[Optional["User"]] = relationship()
