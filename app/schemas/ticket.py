@@ -11,6 +11,8 @@ class TicketBase(BaseModel):
     difficulty: str = Field(default="beginner", max_length=50)
     priority: str = Field(default="medium", max_length=50)
     status: str = Field(default="open", max_length=50)
+    progress: int = Field(default=0, ge=0, le=100)
+    due_date: Optional[datetime] = None
     goal_id: Optional[str] = None
 
 
@@ -25,6 +27,8 @@ class TicketUpdate(BaseModel):
     difficulty: Optional[str] = Field(default=None, max_length=50)
     priority: Optional[str] = Field(default=None, max_length=50)
     status: Optional[str] = Field(default=None, max_length=50)
+    progress: Optional[int] = Field(default=None, ge=0, le=100)
+    due_date: Optional[datetime] = None
     goal_id: Optional[str] = None
 
 
