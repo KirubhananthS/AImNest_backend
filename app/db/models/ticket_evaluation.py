@@ -58,7 +58,7 @@ class TicketEvaluation(Base):
     )
 
     next_action: Mapped[Optional[str]] = mapped_column(
-        String(100),
+        String(1000),
         nullable=True,
     )
 

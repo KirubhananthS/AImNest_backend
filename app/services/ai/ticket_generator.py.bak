@@ -1,0 +1,229 @@
+from __future__ import annotations
+
+import json
+from typing import Any
+
+from sqlalchemy.orm import Session
+
+from app.db.models.goal import Goal
+from app.db.models.user import User
+from app.db.models.learner_skill import LearnerSkill
+from app.schemas.goal_analysis import GoalAnalysisResponse
+from app.schemas.ticket_generation import TicketGenerationResponse
+from app.services.ai import get_llm_provider, LLMMessage
+
+
+class TicketGenerator:
+    def __init__(self, db: Session):
+        self.db = db
+        self.provider = get_llm_provider()
+
+    def generate(
+        self,
+        goal: Goal,
+        user: User,
+        goal_analysis: GoalAnalysisResponse,
+    ) -> TicketGenerationResponse:
+        learner_skills = (
+            self.db.query(LearnerSkill)
+            .filter(LearnerSkill.user_id == user.id)
+            .order_by(LearnerSkill.skill.asc())
+            .all()
+        )
+
+        prompt = self._build_prompt(
+            goal=goal,
+            user=user,
+            goal_analysis=goal_analysis,
+            learner_skills=learner_skills,
+        )
+
+        response = self.provider.generate(
+            messages=[
+                LLMMessage(
+                    role="system",
+                    content=self._system_prompt(),
+                ),
+                LLMMessage(
+                    role="user",
+                    content=prompt,
+                ),
+            ]
+        )
+
+        data = self._parse_response(response.content)
+
+        data["goal_id"] = goal.id
+
+        if "learner_level" not in data:
+            data["learner_level"] = (
+                goal_analysis.learner_level
+            )
+
+        if "recommended_difficulty" not in data:
+            data["recommended_difficulty"] = (
+                goal_analysis.recommended_difficulty
+            )
+
+        return TicketGenerationResponse.model_validate(data)
+
+    def _system_prompt(self) -> str:
+        return """
+You are the AImNest Adaptive Ticket Generator.
+
+Your job is to create practical learning tickets
+for a learner based on their goal, goal analysis,
+current learner skills, experience, and confidence.
+
+Use ONLY the information provided.
+
+Rules:
+
+1. Create practical and actionable learning tasks.
+2. Match the difficulty to the learner's current level.
+3. Focus on one primary skill per ticket.
+4. Prefer hands-on tasks over theoretical questions.
+5. Do not assume knowledge that is not provided.
+6. Do not create study links.
+7. Do not evaluate the learner.
+8. Do not create certifications.
+9. Keep the ticket achievable for the learner's level.
+10. Include clear acceptance criteria.
+
+Return ONLY valid JSON.
+
+JSON structure:
+
+{
+  "learner_level": "beginner/intermediate/advanced",
+  "recommended_difficulty": "beginner/intermediate/advanced",
+  "tickets": [
+    {
+      "title": "short practical task title",
+      "description": "what the learner needs to do",
+      "objective": "what the learner should learn",
+      "difficulty": "beginner/intermediate/advanced",
+      "skill": "primary skill",
+      "expected_outcome": "what successful completion looks like",
+      "acceptance_criteria": [
+        {
+          "criterion": "specific condition"
+        }
+      ]
+    }
+  ]
+}
+
+Generate 1 to 3 tickets only.
+""".strip()
+
+    def _build_prompt(
+        self,
+        goal: Goal,
+        user: User,
+        goal_analysis: GoalAnalysisResponse,
+        learner_skills: list[LearnerSkill],
+    ) -> str:
+        skills_text = self._format_skills(
+            learner_skills
+        )
+
+        skill_gaps_text = ", ".join(
+            goal_analysis.skill_gaps
+        )
+
+        sequence_text = ", ".join(
+            goal_analysis.learning_sequence
+        )
+
+        return f"""
+LEARNER
+
+Name: {user.name}
+Level: {user.level or "Not specified"}
+Bio / Experience: {user.bio or "Not specified"}
+
+CURRENT LEARNER SKILLS
+
+{skills_text}
+
+GOAL
+
+Title: {goal.title}
+Description: {goal.description}
+Category: {goal.category}
+Priority: {goal.priority}
+Progress: {goal.progress}%
+
+GOAL ANALYSIS
+
+Summary:
+{goal_analysis.summary}
+
+Learner Level:
+{goal_analysis.learner_level}
+
+Skill Gaps:
+{skill_gaps_text}
+
+Recommended Difficulty:
+{goal_analysis.recommended_difficulty}
+
+Learning Sequence:
+{sequence_text}
+
+Expectations:
+{goal_analysis.expectations or "Not specified"}
+
+Create practical learning tickets for this learner.
+""".strip()
+
+    def _format_skills(
+        self,
+        learner_skills: list[LearnerSkill],
+    ) -> str:
+        if not learner_skills:
+            return "No learner skills recorded yet."
+
+        lines: list[str] = []
+
+        for skill in learner_skills:
+            lines.append(
+                (
+                    f"- {skill.skill}: "
+                    f"level={skill.level}, "
+                    f"experience_score={skill.experience_score}, "
+                    f"confidence_score={skill.confidence_score}, "
+                    f"evidence_count={skill.evidence_count}"
+                )
+            )
+
+        return "\n".join(lines)
+
+    def _parse_response(
+        self,
+        content: str,
+    ) -> dict[str, Any]:
+        content = content.strip()
+
+        if content.startswith("```"):
+            content = (
+                content
+                .removeprefix("```json")
+                .removeprefix("```")
+            )
+            content = content.removesuffix("```").strip()
+
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                "AI returned an invalid ticket generation response"
+            ) from exc
+
+        if not isinstance(data, dict):
+            raise ValueError(
+                "AI ticket generation response must be a JSON object"
+            )
+
+        return data

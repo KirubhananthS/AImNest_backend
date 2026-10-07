@@ -15,7 +15,8 @@ from app.schemas.ticket import TicketCreate, TicketRead, TicketUpdate
 from app.schemas.ticket_activity import TicketActivityRead
 from app.schemas.ticket_attempt import TicketAttemptCreate, TicketAttemptRead
 from app.schemas.ticket_evaluation import TicketEvaluationRead
-from app.services.ai.ticket_evaluator import TicketEvaluator
+
+from app.services.learner_skill_service import LearnerSkillService
 
 
 router = APIRouter(
@@ -31,7 +32,7 @@ def _get_current_user(
     user = (
         db.query(User)
         .filter(
-            User.id == auth_payload.get("sub")
+            User.id == auth_payload.get("sub"),
         )
         .first()
     )
@@ -81,6 +82,50 @@ def _clean_required(
         )
 
     return cleaned
+
+
+def _update_skill_from_evaluation(
+    db: Session,
+    user: User,
+    ticket: Ticket,
+    evaluation: TicketEvaluation,
+) -> None:
+    """
+    Update learner skill from an existing ticket evaluation.
+
+    This is also used when an evaluation already exists, so
+    re-calling the evaluate endpoint does not leave the
+    learner skill permanently unchanged.
+    """
+
+    skill_service = LearnerSkillService(db)
+
+    learner_skill = skill_service.get_skill(
+        user_id=user.id,
+        skill=ticket.category,
+    )
+
+    should_update_skill = (
+        learner_skill is None
+        or learner_skill.last_evaluated_at is None
+        or (
+            evaluation.created_at is not None
+            and learner_skill.last_evaluated_at
+            < evaluation.created_at
+        )
+    )
+
+    if not should_update_skill:
+        return
+
+    skill_service.update_from_evaluation(
+        user_id=user.id,
+        skill=ticket.category,
+        score=evaluation.score,
+        root_cause_quality=evaluation.root_cause_quality,
+        solution_quality=evaluation.solution_quality,
+        evidence_quality=evaluation.evidence_quality,
+    )
 
 
 @router.post(
@@ -179,10 +224,10 @@ def list_tickets(
     return (
         db.query(Ticket)
         .filter(
-            Ticket.user_id == user.id
+            Ticket.user_id == user.id,
         )
         .order_by(
-            Ticket.created_at.desc()
+            Ticket.created_at.desc(),
         )
         .all()
     )
@@ -235,7 +280,7 @@ def update_ticket(
     )
 
     updates = payload.model_dump(
-        exclude_unset=True
+        exclude_unset=True,
     )
 
     for field_name in (
@@ -249,7 +294,10 @@ def update_ticket(
                 field_name,
             )
 
-    if "goal_id" in updates and updates["goal_id"]:
+    if (
+        "goal_id" in updates
+        and updates["goal_id"]
+    ):
         goal = (
             db.query(Goal)
             .filter(
@@ -281,7 +329,7 @@ def update_ticket(
         )
 
     ticket.updated_at = datetime.now(
-        timezone.utc
+        timezone.utc,
     )
 
     for field_name, new_value in updates.items():
@@ -374,7 +422,7 @@ def update_ticket(
 
 
 @router.delete(
-    "/{ticket_id}"
+    "/{ticket_id}",
 )
 def delete_ticket(
     ticket_id: str,
@@ -432,7 +480,7 @@ def create_ticket_attempt(
             TicketAttempt.user_id == user.id,
         )
         .order_by(
-            TicketAttempt.attempt_number.desc()
+            TicketAttempt.attempt_number.desc(),
         )
         .first()
     )
@@ -451,7 +499,7 @@ def create_ticket_attempt(
         evidence=payload.evidence,
         status="submitted",
         submitted_at=datetime.now(
-            timezone.utc
+            timezone.utc,
         ),
     )
 
@@ -478,6 +526,41 @@ def create_ticket_attempt(
     db.refresh(attempt)
 
     return attempt
+
+
+@router.get(
+    "/{ticket_id}/attempts",
+    response_model=list[TicketAttemptRead],
+)
+def list_ticket_attempts(
+    ticket_id: str,
+    db: Session = Depends(get_db),
+    auth_payload: dict = Depends(
+        get_current_user_from_access_token
+    ),
+):
+    user = _get_current_user(
+        db,
+        auth_payload,
+    )
+
+    ticket = _get_owned_ticket(
+        db,
+        ticket_id,
+        user,
+    )
+
+    return (
+        db.query(TicketAttempt)
+        .filter(
+            TicketAttempt.ticket_id == ticket.id,
+            TicketAttempt.user_id == user.id,
+        )
+        .order_by(
+            TicketAttempt.attempt_number.asc(),
+        )
+        .all()
+    )
 
 
 @router.post(
@@ -523,12 +606,19 @@ def evaluate_ticket_attempt(
         db.query(TicketEvaluation)
         .filter(
             TicketEvaluation.attempt_id
-            == attempt.id
+            == attempt.id,
         )
         .first()
     )
 
     if existing_evaluation:
+        _update_skill_from_evaluation(
+            db=db,
+            user=user,
+            ticket=ticket,
+            evaluation=existing_evaluation,
+        )
+
         return existing_evaluation
 
     evaluator = TicketEvaluator(db)
@@ -546,41 +636,6 @@ def evaluate_ticket_attempt(
             status_code=502,
             detail=str(exc),
         ) from exc
-
-
-@router.get(
-    "/{ticket_id}/attempts",
-    response_model=list[TicketAttemptRead],
-)
-def list_ticket_attempts(
-    ticket_id: str,
-    db: Session = Depends(get_db),
-    auth_payload: dict = Depends(
-        get_current_user_from_access_token
-    ),
-):
-    user = _get_current_user(
-        db,
-        auth_payload,
-    )
-
-    ticket = _get_owned_ticket(
-        db,
-        ticket_id,
-        user,
-    )
-
-    return (
-        db.query(TicketAttempt)
-        .filter(
-            TicketAttempt.ticket_id == ticket.id,
-            TicketAttempt.user_id == user.id,
-        )
-        .order_by(
-            TicketAttempt.attempt_number.asc()
-        )
-        .all()
-    )
 
 
 @router.get(
@@ -612,7 +667,7 @@ def list_ticket_activities(
             TicketActivity.user_id == user.id,
         )
         .order_by(
-            TicketActivity.created_at.asc()
+            TicketActivity.created_at.asc(),
         )
         .all()
     )

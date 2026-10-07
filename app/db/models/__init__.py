@@ -20,6 +20,7 @@ from app.db.models.notification import Notification
 from app.db.models.ticket import Ticket
 from app.db.models.ticket_attempt import TicketAttempt
 from app.db.models.ticket_evaluation import TicketEvaluation
+from app.db.models.learner_skill import LearnerSkill
 
 
 __all__ = [
@@ -41,4 +42,5 @@ __all__ = [
     "Ticket",
     "TicketAttempt",
     "TicketEvaluation",
+    "LearnerSkill",
 ]

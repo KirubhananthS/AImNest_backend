@@ -11,7 +11,7 @@ class TicketEvaluationBase(BaseModel):
     root_cause_quality: Optional[int] = Field(default=None, ge=0, le=10)
     solution_quality: Optional[int] = Field(default=None, ge=0, le=10)
     evidence_quality: Optional[int] = Field(default=None, ge=0, le=10)
-    next_action: Optional[str] = Field(default=None, max_length=100)
+    next_action: Optional[str] = Field(default=None, max_length=1000)
 
 
 class TicketEvaluationRead(TicketEvaluationBase):
