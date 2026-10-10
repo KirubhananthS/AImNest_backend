@@ -183,6 +183,7 @@ class LearnerSkillService:
         user_id: str,
         skills: list[str],
         level: str = "beginner",
+        commit: bool = True,
     ) -> list[LearnerSkill]:
         created_skills: list[LearnerSkill] = []
 
@@ -214,9 +215,10 @@ class LearnerSkillService:
             self.db.add(learner_skill)
             created_skills.append(learner_skill)
 
-        self.db.commit()
+        if commit:
+            self.db.commit()
 
-        for learner_skill in created_skills:
-            self.db.refresh(learner_skill)
+            for learner_skill in created_skills:
+                self.db.refresh(learner_skill)
 
         return created_skills

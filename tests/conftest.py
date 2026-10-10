@@ -9,8 +9,11 @@ import os
 import uuid
 
 import pytest
+from dotenv import load_dotenv
 from fastapi.testclient import TestClient
 from sqlalchemy.engine import URL
+
+load_dotenv()
 
 os.environ["DATABASE_URL"] = URL.create(
     "postgresql+psycopg",

@@ -12,6 +12,7 @@ from app.db.models.workspace_activity import WorkspaceActivity
 from app.db.models.goal import Goal
 from app.db.models.goal_task import GoalTask
 from app.db.models.goal_milestone import GoalMilestone
+from app.db.models.goal_analysis import GoalAnalysis
 
 from app.db.models.conversation import Conversation
 from app.db.models.message import Message
@@ -36,6 +37,7 @@ __all__ = [
     "Goal",
     "GoalTask",
     "GoalMilestone",
+    "GoalAnalysis",
     "Conversation",
     "Message",
     "Notification",

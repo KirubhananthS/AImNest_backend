@@ -6,9 +6,10 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.db.models.goal import Goal
+from app.db.models.goal_analysis import GoalAnalysis
 from app.db.models.user import User
 from app.schemas.goal_analysis import GoalAnalysisResponse
-from app.services.ai import get_llm_provider, LLMMessage
+from app.services.ai import LLMMessage, get_llm_provider
 from app.services.learner_skill_service import LearnerSkillService
 
 
@@ -39,21 +40,46 @@ class GoalAnalyzer:
         )
 
         data = self._parse_response(response.content)
-
         data["goal_id"] = goal.id
 
-        skill_gaps = data.get("skill_gaps", [])
+        # Validate the AI response before writing to the database.
+        analysis = GoalAnalysisResponse.model_validate(data)
 
-        if isinstance(skill_gaps, list):
+        analysis_record = GoalAnalysis(
+            goal_id=goal.id,
+            summary=analysis.summary,
+            learner_level=analysis.learner_level,
+            skill_gaps=analysis.skill_gaps,
+            topics=[
+                topic.model_dump()
+                for topic in analysis.topics
+            ],
+            recommended_difficulty=analysis.recommended_difficulty,
+            learning_sequence=analysis.learning_sequence,
+            expectations=analysis.expectations,
+        )
+
+        try:
+            self.db.add(analysis_record)
+            self.db.flush()
+
             self.learner_skill_service.create_initial_skills(
                 user_id=user.id,
-                skills=skill_gaps,
+                skills=analysis.skill_gaps,
                 level=self._normalize_skill_level(
-                    data.get("learner_level")
+                    analysis.learner_level
                 ),
+                commit=False,
             )
 
-        return GoalAnalysisResponse.model_validate(data)
+            # Commit the analysis record.
+            self.db.commit()
+
+        except Exception:
+            self.db.rollback()
+            raise
+
+        return analysis
 
     def _normalize_skill_level(
         self,
