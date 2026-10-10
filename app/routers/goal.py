@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from app.db.models.goal_analysis import GoalAnalysis
 
 from app.db.models.goal import Goal
 from app.db.models.goal_task import GoalTask
@@ -21,7 +22,10 @@ from app.schemas.goal_milestone import (
     GoalMilestoneRead,
     GoalMilestoneUpdate,
 )
-from app.schemas.goal_analysis import GoalAnalysisResponse
+from app.schemas.goal_analysis import (
+    GoalAnalysisRead,
+    GoalAnalysisResponse,
+)
 from app.schemas.ticket_generation import TicketGenerationResponse
 
 from app.services.ai.goal_analyzer import GoalAnalyzer
@@ -329,7 +333,38 @@ def delete_goal(
         "message": "Goal deleted",
     }
 
+@router.get(
+    "/{goal_id}/analysis",
+    response_model=GoalAnalysisRead,
+)
+def get_goal_analysis(
+    goal_id: str,
+    db: Session = Depends(get_db),
+    auth_payload: dict = Depends(
+        get_current_user_from_access_token
+    ),
+):
+    user = _get_current_user(db, auth_payload)
 
+    _get_owned_goal(db, goal_id, user)
+
+    analysis = (
+        db.query(GoalAnalysis)
+        .filter(GoalAnalysis.goal_id == goal_id)
+        .order_by(
+            GoalAnalysis.created_at.desc(),
+            GoalAnalysis.id.desc(),
+        )
+        .first()
+    )
+
+    if analysis is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Goal analysis not found",
+        )
+
+    return analysis
 # ============================================================
 # AI GOAL ANALYSIS
 # ============================================================
@@ -370,6 +405,39 @@ def analyze_goal(
             status_code=502,
             detail=str(exc),
         ) from exc
+
+@router.get(
+    "/{goal_id}/analysis",
+    response_model=GoalAnalysisRead,
+)
+def get_goal_analysis(
+    goal_id: str,
+    db: Session = Depends(get_db),
+    auth_payload: dict = Depends(
+        get_current_user_from_access_token
+    ),
+):
+    user = _get_current_user(db, auth_payload)
+
+    _get_owned_goal(db, goal_id, user)
+
+    analysis = (
+        db.query(GoalAnalysis)
+        .filter(GoalAnalysis.goal_id == goal_id)
+        .order_by(
+            GoalAnalysis.created_at.desc(),
+            GoalAnalysis.id.desc(),
+        )
+        .first()
+    )
+
+    if analysis is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Goal analysis not found",
+        )
+
+    return analysis
 
 
 # ============================================================

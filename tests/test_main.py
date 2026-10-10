@@ -1480,6 +1480,85 @@ def test_settings_get_update_persistence_authentication_and_user_scope():
     finally:
         db.close()
 
+def test_notifications_unread_count_authentication_and_user_scope():
+    owner_email = f"notification_count_owner_{uuid.uuid4().hex[:8]}@example.com"
+    other_email = f"notification_count_other_{uuid.uuid4().hex[:8]}@example.com"
+    registrations = []
+
+    for name, email in [
+        ("Notification Count Owner", owner_email),
+        ("Notification Count Other", other_email),
+    ]:
+        response = client.post(
+            "/api/auth/register",
+            json={
+                "name": name,
+                "email": email,
+                "password": "StrongPass123!",
+                "phone": "+1234567890",
+            },
+        )
+        assert response.status_code == 200
+        verify_registered_user(email)
+        registrations.append(response.json())
+
+    owner_id = registrations[0]["user"]["id"]
+    other_id = registrations[1]["user"]["id"]
+    owner_headers = {
+        "Authorization": f"Bearer {registrations[0]['accessToken']}"
+    }
+    other_headers = {
+        "Authorization": f"Bearer {registrations[1]['accessToken']}"
+    }
+
+    db = SessionLocal()
+    try:
+        db.add_all([
+            Notification(
+                user_id=owner_id,
+                title="Unread one",
+                body="First unread notification",
+                is_read=False,
+            ),
+            Notification(
+                user_id=owner_id,
+                title="Unread two",
+                body="Second unread notification",
+                is_read=False,
+            ),
+            Notification(
+                user_id=owner_id,
+                title="Already read",
+                body="Previously read notification",
+                is_read=True,
+            ),
+            Notification(
+                user_id=other_id,
+                title="Other user unread",
+                body="Must not be counted for owner",
+                is_read=False,
+            ),
+        ])
+        db.commit()
+    finally:
+        db.close()
+
+    no_auth = client.get("/api/notifications/unread-count")
+    assert no_auth.status_code == 401
+
+    owner_response = client.get(
+        "/api/notifications/unread-count",
+        headers=owner_headers,
+    )
+    assert owner_response.status_code == 200
+    assert owner_response.json() == {"unreadCount": 2}
+
+    other_response = client.get(
+        "/api/notifications/unread-count",
+        headers=other_headers,
+    )
+    assert other_response.status_code == 200
+    assert other_response.json() == {"unreadCount": 1}
 
 def test_ai_conversation_endpoint_returns_conversation_and_message():
     email = f"conversation_legacy_{uuid.uuid4().hex[:8]}@example.com"

@@ -54,12 +54,31 @@ def disable_live_llm_provider():
         app.dependency_overrides.pop(get_llm_provider, None)
 
 
+
+
+@pytest.fixture(autouse=True)
+def disable_real_email_sending(monkeypatch):
+    """Prevent tests from sending real emails."""
+
+    async def fake_send_email(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "app.services.email_service.EmailService.send_otp_email",
+        fake_send_email,
+    )
+    monkeypatch.setattr(
+        "app.services.email_service.EmailService.send_welcome_email",
+        fake_send_email,
+    )
+
+
 @pytest.fixture
 def client() -> TestClient:
     return TestClient(app)
 
-@pytest.fixture(scope="session", autouse=True)
-def seed_demo_user():
+@pytest.fixture(autouse=True)
+def seed_demo_user(disable_real_email_sending):
     db = SessionLocal()
     try:
         existing = db.query(User).filter(

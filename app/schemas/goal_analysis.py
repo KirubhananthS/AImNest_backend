@@ -1,6 +1,7 @@
+from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class GoalAnalysisTopic(BaseModel):
@@ -40,3 +41,16 @@ class GoalAnalysisResponse(BaseModel):
         default=None,
         max_length=3000,
     )
+class GoalAnalysisRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    goal_id: str
+    summary: str
+    learner_level: str
+    skill_gaps: list[str]
+    topics: list[GoalAnalysisTopic]
+    recommended_difficulty: str
+    learning_sequence: list[str]
+    expectations: Optional[str] = None
+    created_at: datetime
